@@ -1,0 +1,139 @@
+version: 1
+type: pipeline-template
+name: repo-tool-simple-ondemand-release-build
+description: This job is performing simple application release build on demand for projects that use Repo tool.
+parameters:
+  # -------------------------------------------------
+  # GIT CONFIGURATION
+  # -------------------------------------------------  
+  - name: GitHTTPSCredentials
+    displayName: Git HTTPS Credential ID
+    type: credentials
+
+  - name: GitSSHCredentials
+    displayName: Git SSH Credential ID
+    type: credentials
+    
+  - name: ManifestRepoUrl
+    displayName: Manifest Repository URL
+    type: string
+
+  - name: ManifestBranch
+    displayName: Manifest Repository Branch
+    type: string
+    defaultValue: master
+
+  # -------------------------------------------------
+  # SHARED LIB CONFIGURATION
+  # -------------------------------------------------  
+  - name: SharedLibName
+    type: string
+    displayName: Name of jenkins shared library
+  - name: SharedLibVersion
+    type: string
+    displayName: Version of jenkins shared library
+    defaultValue: master
+  - name: SharedLibUrl
+    type: string
+    displayName: HTTP/HTTPS url to Jenkins shared library git repo
+    defaultValue: https://gitgerrit.asux.aptiv.com/
+  - name: SharedLibCredentials
+    displayName: Credentials with access to jenkins shared library git repo
+    type: credentials
+    
+  # -------------------------------------------------  
+  # JFROG CONFIGURATION
+  # -------------------------------------------------
+  - name: EnableJFrog
+    displayName: Enable jFrog
+    type: boolean
+  - name: ProjectJFrogRepositoryUrl
+    type: string
+    displayName: HTTP/HTTPS url to jFrog
+    defaultValue: https://jfrog.asux.aptiv.com/
+  - name: ProjectJFrogRepositoryCredentials
+    displayName: jFrog Credential ID
+    type: credentials
+  - name: jFrogArtifactsDescriptionPath
+    type: string
+    displayName: Path to list of artifatcs to be archivedS
+  - name: jFrogBuildName
+    type: string
+    displayName: jFrog Build Name
+  - name: jFrogBuildNumber
+    type: string
+    displayName: jFrog Build Number (More info here TBD)
+    defaultValue: ${BUILD_NUMBER}
+  # -------------------------------------------------  
+  # STAGES CONFIGURATION
+  # -------------------------------------------------
+  - name: EnableReleaseChangeset
+    displayName: Enable changset creation in GIT
+    type: boolean
+  - name: ReleaseChangesetPath
+    type: string
+    displayName: Path for CHANGESET CREATION script (inside Shared Lib, resources dir)
+    defaultValue: bash/execute_changset_create.sh
+  - name: BuildScriptPath
+    type: string
+    displayName: Path for BUILD script (inside Shared Lib, resources dir)
+    defaultValue: bash/execute_build.sh
+  - name: EnableUnitTests
+    displayName: Enable UT in the build (Y/N)
+    type: boolean
+  - name: UnitTestsScriptPath
+    type: string
+    displayName: Path for UNIT TESTS script (inside Shared Lib, resources dir)
+    defaultValue: bash/execute_unittests.sh
+  - name: EnableClang
+    displayName: Enable Clang in the build (Y/N)
+    type: boolean 
+  - name: ClangScriptPath
+    type: string
+    displayName: Path for CLANG script (inside Shared Lib, resources dir)
+    defaultValue: bash/execute_clang.sh   
+  - name: EnableClangStaticAnalyzer
+    displayName: Enable Clang Static Analyzer in the build (Y/N)
+    type: boolean
+  - name: EnableClangStaticAnalyzerPlugin
+    displayName: Enable Warnings NG for Clang Static Analyzer in the build (Y/N)
+    type: boolean
+  - name: ClangStaticAnalyzerResultPath
+    type: string
+    displayName: Path to Clang Static Analyzer results (for Wanrnings NG)
+    defaultValue: ClangStaticAnalyzer.log
+  - name: ClangAnalizerScriptPath
+    type: string
+    displayName: Path for CLANG STATIC ANALIZER script (inside Shared Lib, resources dir)
+    defaultValue: bash/execute_clangstaticanalyzer.sh
+  - name: EnableCoverity
+    displayName: Enable Coverity in the build (Y/N)
+    type: boolean
+    defaultValue: false
+  - name: CoverityScriptPath
+    type: string
+    displayName: Path for COVERITY script (inside Shared Lib, resources dir)
+    defaultValue: bash/coverity.sh
+   
+  # -------------------------------------------------  
+  # INFRASTRUCTURE CONFIGURATION
+  # -------------------------------------------------
+  - name: PodName
+    displayName: The Name of Kubernetes Pod
+    type: string
+
+  - name: RepoContainer
+    displayName: Enter Repo Tool Container Name
+    type: string    
+
+  - name: CoverityContainerName
+    displayName: Enter coverity container name
+    type: string
+
+  - name: GitContainer
+    displayName: Enter Git Container Name
+    type: string    
+
+  - name: JfrogContainer
+    displayName: Enter JFrog Tool Container Name
+    type: string        

@@ -1,0 +1,326 @@
+/**###################### Shared Library Config ######################**/ 
+library identifier: "${SharedLibName}@${SharedLibVersion}", 
+  retriever: modernSCM(
+    [
+      $class: 'GitSCMSource',
+      remote: "${SharedLibUrl}",
+      credentialsId: "${SharedLibCredentials}"
+    ]
+  )
+
+pipeline {
+  /**###################### Parameters Config ######################**/
+  parameters {
+    string defaultValue: '1.0', description: 'Release number', name: 'ReleaseNumber', trim: true
+  }
+
+  /**###################### Agents Config ######################**/
+  agent {
+    kubernetes {
+        inheritFrom "${PodName}"
+    }
+  }
+
+  /**###################### Stages ######################**/
+  stages {
+    /**###################### Git & jFrog Init ######################**/   
+     stage('Init') {
+      steps {
+        script {
+          withCredentials([
+            usernamePassword(
+              credentialsId: ProjectGitRepositoryCredentials, 
+              usernameVariable: 'USERNAME', 
+              passwordVariable: 'PASSWORD'
+            )
+          ]) {
+            container("${GitContainer}") {
+              sh """
+                echo "+--------------------------+"
+                echo "|  Create git credentials  |"
+                echo "|         Status:          |"
+                echo "+--------------------------+"              
+                git config --global credential.helper 'store --file ~/.my-credentials'            		
+                printf "url=${ProjectGitRepositoryUrl}\nusername=${USERNAME}\npassword=${PASSWORD}\n\n" | git credential approve
+                echo "+--------+------+----------+"              
+                echo "+--------+ DONE +----------+"
+                echo "+--------+------+----------+"
+              """
+            }
+          }
+          if(EnableJFrog) {
+            withCredentials([
+              usernamePassword(
+                credentialsId: ProjectJFrogRepositoryCredentials, 
+                usernameVariable: 'USERNAME', 
+                passwordVariable: 'PASSWORD'
+              )
+            ]) {
+
+              container("${JfrogContainer}"){
+                EXIT_CODE = sh label: 'Check jfrog config', returnStatus: true,
+                script: 'jfrog config show | grep aptiv-jfrog-1'
+
+                println "${EXIT_CODE}"
+                
+                if (EXIT_CODE != 0) {
+                  sh """set +x
+                    echo "+--------------------------+"
+                    echo "| Create jFrog credentials |"
+                    echo "|          Status:         |"
+                    echo "+--------------------------+"              
+
+                    jfrog c add aptiv-jfrog-1 \
+                      --basic-auth-only \
+                      --artifactory-url ${ProjectJFrogRepositoryUrl}artifactory \
+                      --user ${USERNAME} \
+                      --password ${PASSWORD}
+
+                    echo "+---------+------+---------+"              
+                    echo "+---------+ DONE +---------+"
+                    echo "+---------+------+---------+"    
+                  """
+                }   
+
+                else {
+                  echo "JFrog configuration 'aptiv-jfrog-1' already exists"
+                }        
+              }
+            }
+          }
+        }
+      }
+    } 
+
+    /**###################### Cloning Using Checkout Step ######################**/
+    stage('Cloning Manifest Repo') {
+        steps { // Executes on JNLP, no specific container required
+                script {
+                    checkout([
+                        $class: 'GitSCM', 
+                        branches: 
+                        [[name: "*/${ManifestBranch}"]], 
+                        doGenerateSubmoduleConfigurations: false, 
+                        extensions: [[
+                            $class: 'LocalBranch', 
+                            localBranch: "**"
+                            ]], 
+                        submoduleCfg: [],
+                        userRemoteConfigs: [[credentialsId: GitHTTPSCredentials, 
+                                             url: ManifestRepoUrl]]
+                        ])
+                }
+            }
+        }
+    /**###################### Setting SSH up on Repo Container ######################**/    
+    stage('Repo SSH Setup') {
+            steps {
+                container("${RepoContainer}") { 
+                        withCredentials([sshUserPrivateKey(credentialsId: "${GitSSHCredentials}", keyFileVariable: 'private_key', usernameVariable: 'SSHUsername')]) {
+                          sh '''
+<<<<<<< HEAD
+                            mkdir ~/.ssh/
+                            ssh-keyscan -t ecdsa -p 29418 -H gitgerrit.asux.aptiv.com >> ~/.ssh/known_hosts
+                            cat "${private_key}" > ~/.ssh/gerrit_key
+                            echo "Host gitgerrit.asux.aptiv.com" >> ~/.ssh/config
+                            echo "  IdentityFile ~/.ssh/gerrit_key" >> ~/.ssh/config
+                            echo "  User ${SSHUsername}" >> ~/.ssh/config
+                            echo "  Port 29418" >> ~/.ssh/config
+                            # echo "  StrictHostKeyChecking no" >> ~/.ssh/config
+                            chmod 400 ~/.ssh/gerrit_key
+=======
+                          mkdir ~/.ssh/
+                          ssh-keyscan -t ecdsa -p 29418 -H gitgerrit.asux.aptiv.com >> ~/.ssh/known_hosts
+                          cat "${private_key}" > ~/.ssh/gerrit_key
+                          echo "Host gitgerrit.asux.aptiv.com" >> ~/.ssh/config
+                          echo "  IdentityFile ~/.ssh/gerrit_key" >> ~/.ssh/config
+                          echo "  User ${SSHUsername}" >> ~/.ssh/config
+                          echo "  Port 29418" >> ~/.ssh/config
+                          # echo "  StrictHostKeyChecking no" >> ~/.ssh/config
+                          chmod 400 ~/.ssh/gerrit_key
+>>>>>>> b7a1cab5abf6fb3de0a1c14e789b5cdd9a6c4142
+                          '''
+                }
+            }
+        } 
+    }
+    
+    /**###################### Initiating Repo Tool ######################**/    
+    stage('Repo Tool Init') {
+            steps { // Executes on container with Repo tool installed
+                container("${RepoContainer}") { 
+                        sh """
+<<<<<<< HEAD
+                          repo init -u .
+                          repo sync
+=======
+                        repo init -u .
+                        repo sync
+>>>>>>> b7a1cab5abf6fb3de0a1c14e789b5cdd9a6c4142
+                        """
+                }
+            }
+        }  
+
+    /**###################### Git Release Changeset ######################**/  
+    stage('Git Release Changeset') { 
+      steps {
+        script {
+          container("${GitContainer}") {   
+            if(EnableReleaseChangeset){
+              echo "Create release changeset"
+              sh(script: libraryResource("${ReleaseChangesetPath}"))
+            }
+            env.GIT_COMMIT_ID_SHORT = sh(returnStdout: true, script: "git rev-parse --short HEAD")
+            env.GIT_COMMIT_ID       = sh(returnStdout: true, script: "git rev-parse HEAD")
+          }
+        }
+      }
+    }
+
+    /**###################### Building Stage ######################**/ 
+    stage('Build') { 
+      environment {
+        ReleaseNumber = "${params.ReleaseNumber}"
+      }
+      steps {
+        container("${RepoContainer}") { 
+            script {
+              echo "Build"
+              sh(script: libraryResource("${BuildScriptPath}"))
+            }
+        }
+      }
+    }
+
+    /**###################### Unit Testing ######################**/  
+    stage('UnitTests') { 
+      when {
+        expression {
+          EnableUnitTests == true
+        }
+      }
+      steps {
+        script {
+          echo "Unit Tests"
+          sh(libraryResource("${UnitTestsScriptPath}"))
+        }
+      }
+    }
+
+    /**###################### Clang Config ######################**/ 
+    stage('Clang') {
+      when {
+        expression {
+          EnableClang == true
+        }
+      } 
+      steps {
+        script {
+          echo "Clang"
+          sh(libraryResource("${ClangScriptPath}"))
+        }
+      }
+    }
+    stage('Clang Static Analyzer') {
+      when {
+        expression {
+          EnableClangStaticAnalyzer == true
+        }
+      } 
+      steps {
+        script {
+          echo "Clang Static Analyzer"
+          sh(libraryResource("${ClangAnalizerScriptPath}"))
+        }
+      }
+    }
+
+    /**###################### Coverity Config ######################**/ 
+    stage("Coverity"){
+      when {
+        expression {
+          EnableCoverity == true
+        }
+      } 
+      steps{
+        echo "Coverity"
+        sh(libraryResource("${CoverityScriptPath}"))
+      }
+    }
+
+    /**###################### jFrog Config ######################**/ 
+    stage("jFrog Upload"){
+      when {
+        expression {
+          EnableJFrog == true
+        }
+      } 
+      steps{
+        script {
+          container("${JfrogContainer}"){
+
+            sh """set +x
+              echo "version: 1" >> jFrogJiraConfig.yaml
+              echo "issues:" >> jFrogJiraConfig.yaml
+              echo "  trackerName: JIRA" >> jFrogJiraConfig.yaml
+              echo "  regexp: (.+-[0-9]+)\\s(.+)" >> jFrogJiraConfig.yaml
+              echo "  keyGroupIndex: 1" >> jFrogJiraConfig.yaml
+              echo "  summaryGroupIndex: 2" >> jFrogJiraConfig.yaml
+              echo "  trackerUrl: https://jiraprod.aptiv.com/browse/" >> jFrogJiraConfig.yaml
+              echo "  aggregate: false" >> jFrogJiraConfig.yaml
+              echo "  aggregationStatus: RELEASED" >> jFrogJiraConfig.yaml
+            """
+
+            echo "jFrog"
+            def jsonObj = readJSON text: libraryResource("${jFrogArtifactsDescriptionPath}")
+            def jsonObjFiles = jsonObj['files']
+            def filePattern = ""
+            def fileTarget = ""
+            
+			for (entry in env) {
+			  jFrogBuildNumber=jFrogBuildNumber.replace("\${${entry.key}}", "${entry.value}")
+			}
+            
+            for (entry in params) {
+			  jFrogBuildNumber=jFrogBuildNumber.replace("\${${entry.key}}", "${entry.value}")
+			}
+			            
+            
+            jFrogBuildNumber=jFrogBuildNumber.replace("\${GIT_COMMIT_ID}", "${env.GIT_COMMIT_ID}")
+            jFrogBuildNumber=jFrogBuildNumber.replace("\${ReleaseNumber}", "${params.ReleaseNumber}")
+            
+            echo "Build name: ${jFrogBuildName}"
+            echo "Build number: ${jFrogBuildNumber}"
+            for (int i = 0; i < jsonObjFiles.size(); i++) {
+              filePattern = jsonObjFiles[i].pattern
+              fileTarget = jsonObjFiles[i].target
+              println """\
+                ---------------------------
+                jFrog Upload:
+                File: ${filePattern}
+                Location: ${fileTarget}
+        	  """.stripIndent()
+        	  sh """#set +x
+        	        jfrog rt u \
+        	          ${filePattern} \
+        	          ${fileTarget} \
+        	          --flat=true \
+        	          --build-name ${jFrogBuildName} \
+        	          --build-number ${jFrogBuildNumber}
+        	  """
+              println """\
+                Completed.
+                ---------------------------
+        	  """.stripIndent()
+    	    }
+    	    sh """set +x
+    	          jfrog rt bag --config jFrogJiraConfig.yaml ${jFrogBuildName} ${jFrogBuildNumber}
+    	          jfrog rt bp --build-url ${BUILD_URL} ${jFrogBuildName} ${jFrogBuildNumber}
+    	       """
+    	  }
+        }
+      }
+    }    
+  }    
+} 

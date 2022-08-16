@@ -1,0 +1,134 @@
+version: 1
+type: pipeline-template
+name: repo-tool-simple-build-gate
+templateType: MULTIBRANCH
+description: This job is performing a simple gate build for projects that use Repo tool.
+
+parameters:
+  # -------------------------------------------------
+  # GIT CONFIGURATION
+  # -------------------------------------------------  
+  - name: ManifestRepoName
+    displayName: Manifest Repository Name
+    type: string
+
+  - name: ManifestBranch
+    displayName: Manifest Repository Branch
+    type: string
+    defaultValue: master
+
+  - name: ManifestRepoUrl
+    displayName: Manifest Repository URL
+    type: string
+
+  - name: ProjectRepository
+    displayName: Project Repository Name
+    type: string 
+
+  - name: ProjectRepositoryUrl
+    displayName: Project Repository URL
+    type: string
+
+  - name: GitHTTPSCredentials
+    displayName: Git HTTPS Credential ID
+    type: credentials
+
+  - name: GitSSHCredentials
+    displayName: Git SSH Credential ID
+    type: credentials
+
+  # -------------------------------------------------
+  # INFRASTRUCTURE CONFIGURATION
+  # -------------------------------------------------  
+  - name: PodName
+    displayName: The Name of Kubernetes Pod
+    type: string
+
+  - name: RepoContainer
+    displayName: Enter Repo Tool Container Name
+    type: string
+
+  # -------------------------------------------------
+  # BUILD CONFIGURATION
+  # -------------------------------------------------  
+  - name: BuildScriptPath
+    type: string
+    displayName: Path for BUILD script (inside Shared Lib, resources dir)
+    defaultValue: bash/execute_build.sh
+
+  - name: EnableUnitTests
+    displayName: Enable UT in the build (Y/N)
+    type: boolean
+
+  - name: UnitTestsScriptPath
+    type: string
+    displayName: Path for UNITTESTS script (inside Shared Lib, resources dir)
+    defaultValue: bash/execute_unittests.sh
+
+  - name: EnableClang
+    displayName: Enable Clang in the build (Y/N)
+    type: boolean    
+
+  - name: ClangScriptPath
+    type: string
+    displayName: Path for CLANG script (inside Shared Lib, resources dir)
+    defaultValue: bash/execute_clang.sh
+
+  - name: EnableClangStaticAnalyzer
+    displayName: Enable Clang Static Analyzer in the build (Y/N)
+    type: boolean
+
+  - name: ClangStaticAnalyzerScriptPath
+    type: string
+    displayName: Path for CLANG STATIC ANALYZER script (inside Shared Lib, resources dir)
+    defaultValue: bash/execute_clang.sh
+
+  - name: EnableClangStaticAnalyzerPlugin
+    displayName: Enable Warnings NG for Clang Static Analyzer in the build (Y/N)
+    type: boolean
+
+  - name: ClangStaticAnalyzerResultPath
+    type: string
+    displayName: Path to Clang Static Analyzer results (for Wanrnings NG)
+    defaultValue: ClangStaticAnalyzer.log    
+
+  # -------------------------------------------------
+  # SHARED LIBRARY CONFIGURATION
+  # ------------------------------------------------- 
+  - name: SharedLibName
+    type: string
+    displayName: Name of jenkins shared library
+
+  - name: SharedLibVersion
+    type: string
+    displayName: Version of jenkins shared library
+    defaultValue: master
+
+  - name: SharedLibUrl
+    type: string
+    displayName: HTTP/HTTPS url to Jenkins shared library git repo
+    defaultValue: https://gitgerrit.asux.aptiv.com/
+
+  - name: SharedLibCredentials
+    displayName: Credentials with access to jenkins shared library git repo
+    type: credentials
+
+  # -------------------------------------------------
+  # MULTIBRANCH CONFIGURATION
+  # ------------------------------------------------- 
+multibranch:
+  branchSource:
+    gerrit:
+      remote: ${ProjectRepositoryUrl}
+      credentialsId: ${GitHTTPSCredentials}
+      traits:
+        - $class: ChangeDiscoveryTrait
+          queryString: ''
+        - $class: RefSpecsSCMSourceTrait
+          templates:
+          - value: '+refs/heads/*:refs/remotes/@{remote}/*'
+        - $class: SubmoduleOptionTrait
+          extension:
+            disableSubmodules: false
+            recursiveSubmodules: true
+            parentCredentials: true    

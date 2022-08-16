@@ -1,0 +1,216 @@
+/**###################### Shared Library Config ######################**/ 
+library identifier: "${SharedLibName}@${SharedLibVersion}", 
+  retriever: modernSCM(
+    [
+      $class: 'GitSCMSource',
+      remote: "${SharedLibUrl}",
+      credentialsId: "${SharedLibCredentials}"
+    ]
+  )
+
+pipeline {
+/**###################### Agents Config ######################**/
+  agent {
+    kubernetes {
+      inheritFrom "${PodName}"
+    }
+  
+  }
+  options {
+    // This will checkout the changed repository that has triggered this pipeline to a sperate folder named "tmp_repository", to be used later in the build
+    checkoutToSubdirectory("tmp_repository")
+  }
+/**###################### Stages ######################**/
+    stages {
+    /**###################### Gerrit Review Log ######################**/
+    stage('Init') {
+      steps {
+        script {
+          gerritReview message: "Build started: ${BUILD_URL}"
+        }
+      }
+    }     
+    /**###################### Cloning Manifest Repository ######################**/
+    stage('Cloning Manifest Repo') {
+        steps { // Executes on JNLP, no specific container required
+                script {
+                echo "Cloning the Manifest repository: ${ManifestRepoName}"
+                // This will checkout the manifest repository into a folder under the same name as the repository
+                dir ("${ManifestRepoName}") { 
+                    checkout([
+                        $class: 'GitSCM', 
+                        branches: 
+                        [[name: "*/${ManifestBranch}"]], 
+                        doGenerateSubmoduleConfigurations: false, 
+                        extensions: [[
+                            $class: 'LocalBranch', 
+                            localBranch: "**"
+                          ],[
+                            $class: 'CleanBeforeCheckout',
+                            deleteUntrackedNestedRepositories: false
+                          ]], 
+                        submoduleCfg: [],
+                        userRemoteConfigs: [[credentialsId: GitHTTPSCredentials, /*Netid credentials must be used instead of HTTPS tokens.*/
+                                             url: ManifestRepoUrl]]
+                        ])
+                }
+                }
+            }
+        }
+    /**###################### Setting SSH up on Repo Container ######################**/    
+    stage('Repo SSH Setup') {
+            steps {
+                container("${RepoContainer}") { 
+                        withCredentials([
+                          sshUserPrivateKey(
+                            credentialsId: "${GitSSHCredentials}", 
+                            keyFileVariable: 'private_key', 
+                            usernameVariable: 'SSHUsername'
+                        )]) {
+                          sh '''
+                            mkdir ~/.ssh/
+                            ssh-keyscan -t ecdsa -p 29418 -H gitgerrit.asux.aptiv.com >> ~/.ssh/known_hosts
+                            cat "${private_key}" > ~/.ssh/gerrit_key
+                            echo "Host gitgerrit.asux.aptiv.com" >> ~/.ssh/config
+                            echo "  IdentityFile ~/.ssh/gerrit_key" >> ~/.ssh/config
+                            echo "  User ${SSHUsername}" >> ~/.ssh/config
+                            echo "  Port 29418" >> ~/.ssh/config
+                            chmod 400 ~/.ssh/gerrit_key
+                          '''
+                }
+            }
+        } 
+    }
+    /**###################### Initiating & Syncing Git Repo Tool ######################**/    
+        stage('Repo Tool Init') {
+            steps {
+                script {
+                    // In case we are updating the manifest repository, we copy the changes from "tmp_repository" before initating Repo tool:
+                    if ("${ManifestRepoName}" == "${ProjectRepository}" ) {
+                        container("${RepoContainer}") {
+                            echo "Replacing the old manifest repository with the changed manifest repository"
+                            sh """
+                              cp -rf tmp_repository/* "${ManifestRepoName}"/
+                            """
+
+                            echo "Initiating repo & syncing the rest of the project"
+                            sh """
+                              cd "${ManifestRepoName}"
+                              repo init -u .
+                              repo sync
+                            """
+                        }
+                    } 
+                    // In case we are updating a project repository, we copy the changes from "tmp_repository" after initating Repo tool:
+                    else {
+                        container("${RepoContainer}") {
+                            echo "Initiating Repo & Syncing the rest of the project"
+                            sh """
+                              cd "${ManifestRepoName}"
+                              repo init -u .
+                              repo sync
+                            """
+
+                            echo "Replacing the old project repository with the changed repository for ${ProjectRepository}"
+                            sh """
+                              cp -rf tmp_repository/* ${ManifestRepoName}/${ProjectRepository}/
+                            """
+                            }
+                        }
+                }
+            }
+        } 
+    /**###################### Building Stage ######################**/  
+    stage('Build') { 
+      steps {
+        container("${RepoContainer}") { 
+          dir("${ManifestRepoName}") {
+            script {
+              echo "Build"
+              sh(script: libraryResource("${BuildScriptPath}"))
+            }
+          }
+        }
+      }
+    }
+    /**###################### Unit Testing ######################**/  
+    stage('UnitTests') { 
+      when {
+        expression {
+          EnableUnitTests == true
+        }
+      }
+      steps {
+        script {
+          echo "Unit Tests"
+          sh(libraryResource("${UnitTestsScriptPath}"))
+        }
+      }
+    }
+    /**###################### Clang Config ######################**/ 
+    stage('Clang') {
+      when {
+        expression {
+          EnableClang == true
+        }
+      } 
+      steps {
+        script {
+          echo "Clang"
+          sh(libraryResource("${ClangScriptPath}"))
+        }
+      }
+    }
+
+    stage('Clang Static Analyzer') {
+      when {
+        expression {
+          EnableClangStaticAnalyzer == true
+        }
+      } 
+      steps {
+        script {
+          echo "Clang Static Analyzer"
+          sh(libraryResource("${ClangStaticAnalyzerScriptPath}"))
+        }
+      }
+
+      /**###################### Final Stage ######################**/ 
+      post {
+        always {
+          script {
+            if (EnableClangStaticAnalyzerPlugin == true){
+              recordIssues([
+                enabledForFailure: true,
+                tools: [clangAnalyzer(pattern: "${ClangStaticAnalyzerResultPath}")]
+              ])
+            }
+          }
+        }
+      }
+    }    
+  }
+
+  post {
+    success {
+      gerritReview labels: [Verified: 1]
+    }
+    unstable { gerritReview labels: [Verified: 0], message: 'Build is unstable' }
+    failure{
+      gerritReview labels: [Verified: -1]
+      script{
+        if(env.GERRIT_PATCHSET_UPLOADER_EMAIL && env.GERRIT_CHANGE_OWNER_EMAIL){
+           emailext body:"Please be informed, that the job ${BUILD_URL} completed with status FAILURE.\n Change URL: ${GERRIT_CHANGE_URL}",
+             mimeType: 'text/html',
+             subject: "[Jenkins] Build FAILURE!: ${JOB_NAME}",
+             to: "${GERRIT_PATCHSET_UPLOADER_EMAIL}, ${GERRIT_CHANGE_OWNER_EMAIL}"
+        } else {
+          emailext body:"Please be informed, that the job ${BUILD_URL} completed with status FAILURE",
+            mimeType: 'text/html',
+            recipientProviders: [developers(), requestor()],
+            subject: "[Jenkins] Build FAILURE!: ${JOB_NAME}"            
+        }
+      }
+    }
+  }  
+}

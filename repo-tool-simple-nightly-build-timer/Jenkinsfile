@@ -1,0 +1,150 @@
+/**###################### Shared Library Config ######################**/ 
+library identifier: "${SharedLibName}@${SharedLibVersion}", 
+  retriever: modernSCM(
+    [
+      $class: 'GitSCMSource',
+      remote: "${SharedLibUrl}",
+      credentialsId: "${SharedLibCredentials}"
+    ]
+  )
+
+pipeline {
+  /**###################### Trigger Config ######################**/
+  triggers {
+    cron "${BuildCronTimer}"
+  }
+
+  /**###################### Agents Config ######################**/
+  agent {
+    kubernetes {
+        inheritFrom "${PodName}"
+    }
+  }
+
+  /**###################### Stages ######################**/
+  stages {    
+    /**###################### Cloning Manifest Repository ######################**/
+    stage('Cloning Manifest Repo') {
+        steps { // Executes on JNLP, no specific container required
+                script {
+                    checkout([
+                        $class: 'GitSCM', 
+                        branches: 
+                        [[name: "*/${ManifestBranch}"]], 
+                        doGenerateSubmoduleConfigurations: false, 
+                        extensions: [[
+                            $class: 'LocalBranch', 
+                            localBranch: "**"
+                            ]], 
+                        submoduleCfg: [],
+                        userRemoteConfigs: [[credentialsId: GitHTTPSCredentials, /*Netid credentials must be used instead of HTTPS tokens.*/
+                                             url: ManifestRepoUrl]]
+                        ])
+                }
+            }
+        }
+    /**###################### Setting SSH up on Repo Container ######################**/    
+    stage('Repo SSH Setup') {
+            steps {
+                container("${RepoContainer}") { 
+                        withCredentials([sshUserPrivateKey(credentialsId: "${GitSSHCredentials}", keyFileVariable: 'private_key', usernameVariable: 'SSHUsername')]) {
+                          sh '''
+                            mkdir ~/.ssh/
+                            ssh-keyscan -t ecdsa -p 29418 -H gitgerrit.asux.aptiv.com >> ~/.ssh/known_hosts
+                            cat "${private_key}" > ~/.ssh/gerrit_key
+                            echo "Host gitgerrit.asux.aptiv.com" >> ~/.ssh/config
+                            echo "  IdentityFile ~/.ssh/gerrit_key" >> ~/.ssh/config
+                            echo "  User ${SSHUsername}" >> ~/.ssh/config
+                            echo "  Port 29418" >> ~/.ssh/config
+                            # echo "  StrictHostKeyChecking no" >> ~/.ssh/config
+                            chmod 400 ~/.ssh/gerrit_key
+                          '''
+                }
+            }
+        } 
+    }
+    
+    /**###################### Initiating Repo Tool ######################**/    
+    stage('Repo Tool Init') {
+            steps { // Executes on container with Repo tool installed
+                container("${RepoContainer}") { 
+                        sh """
+                          repo init -u .
+                          repo sync
+                        """
+                }
+            }
+        }  
+
+    /**###################### Building Stage ######################**/ 
+    stage('Build') { 
+      steps {
+        container("${RepoContainer}") { 
+            script {
+              echo "Build"
+              sh(script: libraryResource("${BuildScriptPath}"))
+            }
+        }
+      }
+    }
+
+    /**###################### Unit Testing ######################**/  
+    stage('UnitTests') { 
+      when {
+        expression {
+          EnableUnitTests == true
+        }
+      }
+      steps {
+        script {
+          echo "Unit Tests"
+          sh(libraryResource("${UnitTestsScriptPath}"))
+        }
+      }
+    }
+
+    /**###################### Clang Config ######################**/ 
+    stage('Clang') {
+      when {
+        expression {
+          EnableClang == true
+        }
+      } 
+      steps {
+        script {
+          echo "Clang"
+          sh(libraryResource("${ClangScriptPath}"))
+        }
+      }
+    }
+
+    stage('Clang Static Analyzer') {
+      when {
+        expression {
+          EnableClangStaticAnalyzer == true
+        }
+      } 
+      steps {
+        script {
+          echo "Clang Static Analyzer"
+          sh(libraryResource("${ClangAnalizerScriptPath}"))
+        }
+      }
+    }
+
+    /**###################### Coverity Config ######################**/ 
+    stage("Coverity") {
+      when {
+        expression {
+          EnableCoverity == true
+        }
+      } 
+      steps {
+        container("${CoverityContainerName}"){
+          echo "Coverity"
+          sh(libraryResource("${CoverityScriptPath}"))
+        }
+      }
+    }
+  }    
+}
